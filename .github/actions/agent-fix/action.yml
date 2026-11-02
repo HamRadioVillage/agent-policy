@@ -38,6 +38,17 @@ inputs:
   base_branch:
     description: Branch to cut from and target.
     default: main
+  # Where the PR goes. Empty means this repo, which is what you want unless
+  # this repo is a fork whose work belongs upstream. Set it and the PR is
+  # opened cross-fork, from this repo's branch against the parent - a public
+  # contribution to someone else's project, so read the note in the playbook
+  # before switching it on.
+  #
+  # The issue always stays here: comments and labels go to the repo the
+  # workflow ran in, never to the PR target.
+  pr_target_repo:
+    description: 'owner/name to open the PR against. Empty = this repo.'
+    default: ''
   model:
     default: claude-opus-5-5
   max_turns:
@@ -97,6 +108,13 @@ runs:
 
     - name: Triage, fix, document
       uses: anthropics/claude-code-action@v1
+      # Pins every unqualified gh call the agent makes to THIS repo. Without
+      # it, gh resolves a fork's default repo to the parent, so `gh issue
+      # view 7` would read the parent's issue 7 and `gh pr create` would
+      # open the PR on the parent. Crossing that line must be deliberate,
+      # via pr_target_repo, not a default nobody noticed.
+      env:
+        GH_REPO: ${{ github.repository }}
       with:
         anthropic_federation_rule_id: ${{ inputs.anthropic_federation_rule_id }}
         anthropic_organization_id: ${{ inputs.anthropic_organization_id }}
@@ -118,6 +136,18 @@ runs:
 
           Branch from ${{ inputs.base_branch }}. Do not modify
           .github/workflows/**.
+
+          Issue operations - view, comment, label - always target
+          ${{ github.repository }}. Open the pull request against
+          ${{ inputs.pr_target_repo || github.repository }}, explicitly:
+
+            gh pr create --repo ${{ inputs.pr_target_repo || github.repository }} \
+                         --head ${{ github.repository_owner }}:<your-branch> \
+                         --base ${{ inputs.base_branch }}
+
+          If those two repositories differ you are contributing to a project
+          this org does not own. Follow the playbook's cross-fork section
+          before you open anything.
         claude_args: |
           --model ${{ inputs.model }}
           --max-turns ${{ inputs.max_turns }}

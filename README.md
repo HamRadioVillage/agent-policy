@@ -126,6 +126,37 @@ It treats the report body as untrusted data. Reports arrive from Discord via
 radar, quoted verbatim; rule zero of the playbook tells the agent to ignore
 and surface any instructions embedded in them.
 
+## Forks
+
+If the calling repo is a fork, `gh` resolves its default repository to the
+**parent**, not the fork. Unpinned, `gh issue view 7` reads the parent's
+issue 7 and `gh pr create` opens the PR on the parent's repo. The action sets
+`GH_REPO` to the calling repo so that cannot happen by accident, and the
+prompt passes the PR target explicitly.
+
+Two other fork defaults bite before any of this runs: a fork has **Issues
+disabled** and **Actions disabled** until someone turns each on. Without
+Issues there is nothing to label, so the trigger can never fire.
+
+To deliberately send a fork's work upstream, set `pr_target_repo`:
+
+```yaml
+    pr_target_repo: upstream-owner/name
+```
+
+The PR is then opened cross-fork — from your branch against their base —
+while every issue comment and label stays on your fork. Understand what that
+means before switching it on: each run becomes a public contribution to a
+project you do not own, under your org's name, originating from a bug report
+written by whoever was in Discord. Section 5 of the playbook makes the agent
+read the target's `CONTRIBUTING.md`, stop if they have a policy against
+AI-generated contributions, disclose what it is, and keep the reporter's
+prose and identity out of the PR entirely.
+
+One consequence worth planning for: a PR on someone else's repo raises no
+webhook this org receives, so the only thing that reaches the Discord thread
+is the agent's comment on the originating issue.
+
 ## Changing the playbook
 
 `agent/triage-and-fix.md` is the product. When a PR comes back wrong, the fix
