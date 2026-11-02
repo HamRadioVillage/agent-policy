@@ -1,0 +1,141 @@
+name: Agent fix
+description: Triage an issue, fix it, document it, and open a pull request.
+
+# A composite action rather than a reusable workflow, because the caller must
+# be able to set its own toolchain up with real actions first. villagers pins
+# ruby-3.4.1, which is not on the runner image: a shell-only setup hook cannot
+# install it, but `ruby/setup-ruby@v1` in the caller can. The cost is that
+# each caller declares its own permissions, concurrency and timeout - the
+# template in callers/ carries them.
+
+inputs:
+  issue_number:
+    description: The issue to work.
+    required: true
+  # Workload Identity Federation, not an API key. These three are
+  # identifiers, not credentials - the job exchanges its GitHub OIDC token
+  # for an Anthropic token that expires in minutes, so there is no static
+  # secret to store or rotate. Pass them as plain `vars`, not `secrets`.
+  #
+  # Deliberately no anthropic_api_key input: a static key takes precedence
+  # over federation in the SDK's credential chain, so accepting both would
+  # let a stray key silently shadow the federated path.
+  anthropic_federation_rule_id:
+    description: Federation rule (fdrl_...). Per repo - this is the opt-in switch.
+    required: true
+  anthropic_organization_id:
+    description: Anthropic organization ID (a UUID).
+    required: true
+  anthropic_service_account_id:
+    description: Service account the minted token acts as (svac_...).
+    required: true
+  anthropic_workspace_id:
+    description: Workspace (wrkspc_...). Only needed if the rule covers more than one.
+    default: ''
+  github_token:
+    description: Token used for the gate, the PR and issue comments.
+    default: ${{ github.token }}
+  base_branch:
+    description: Branch to cut from and target.
+    default: main
+  model:
+    default: claude-opus-5-5
+  max_turns:
+    default: '60'
+  allowed_tools:
+    description: >-
+      Commands the agent may run. Bash is off by default in
+      claude-code-action, so anything absent here cannot be executed.
+    default: Read,Write,Edit,Glob,Grep,Bash(git:*),Bash(gh issue:*),Bash(gh pr:*)
+  label:
+    default: agent:triage
+
+runs:
+  using: composite
+  steps:
+    # A denied token exchange returns an opaque 401 "Authentication failed",
+    # so catch the one setup mistake we can see from here: a caller that
+    # forgot `id-token: write`. Without it the runner sets neither variable
+    # and there is no OIDC token to exchange.
+    - name: Check the caller can mint an OIDC token
+      shell: bash
+      run: |
+        if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+          echo "::error::This job cannot request an OIDC token. Add" \
+               "'id-token: write' to the caller's permissions block."
+          exit 1
+        fi
+        echo "OIDC token endpoint is available."
+
+    # On a public repo anyone can open an issue, and triage-level
+    # collaborators can label one. Only write access spends tokens.
+    - name: Gate on the labeller's permission
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        SENDER: ${{ github.event.sender.login }}
+        REPO: ${{ github.repository }}
+      run: |
+        perm="$(gh api "repos/$REPO/collaborators/$SENDER/permission" \
+                 --jq .permission 2>/dev/null || echo none)"
+        echo "$SENDER has: $perm"
+        case "$perm" in
+          admin|maintain|write) ;;
+          *) echo "::error::$SENDER lacks write access; refusing to run"; exit 1 ;;
+        esac
+
+    # The action's own files are already on disk at $GITHUB_ACTION_PATH, so
+    # the playbook needs no second checkout. Copying it to RUNNER_TEMP keeps
+    # it outside the workspace, where the agent's `git add -A` cannot reach
+    # it - the reusable-workflow version needed a .git/info/exclude hack.
+    - name: Stage the playbook
+      shell: bash
+      run: |
+        cp "$GITHUB_ACTION_PATH/../../../agent/triage-and-fix.md" \
+           "$RUNNER_TEMP/agent-playbook.md"
+        wc -l "$RUNNER_TEMP/agent-playbook.md"
+
+    - name: Triage, fix, document
+      uses: anthropics/claude-code-action@v1
+      with:
+        anthropic_federation_rule_id: ${{ inputs.anthropic_federation_rule_id }}
+        anthropic_organization_id: ${{ inputs.anthropic_organization_id }}
+        anthropic_service_account_id: ${{ inputs.anthropic_service_account_id }}
+        anthropic_workspace_id: ${{ inputs.anthropic_workspace_id }}
+        github_token: ${{ inputs.github_token }}
+        base_branch: ${{ inputs.base_branch }}
+        branch_prefix: agent/
+        # Only the issue number is interpolated. The agent reads the report
+        # itself with `gh issue view`, so the reporter's text arrives as tool
+        # output that rule zero of the playbook already frames as data.
+        prompt: |
+          Work issue #${{ inputs.issue_number }} in ${{ github.repository }}.
+
+          Read ${{ runner.temp }}/agent-playbook.md and follow it exactly,
+          including rule zero about untrusted report text. If
+          .github/agent/overrides.md exists in this repo, read it too - it
+          adds repo-specific conventions and wins on conflicts.
+
+          Branch from ${{ inputs.base_branch }}. Do not modify
+          .github/workflows/**.
+        claude_args: |
+          --model ${{ inputs.model }}
+          --max-turns ${{ inputs.max_turns }}
+          --allowedTools "${{ inputs.allowed_tools }}"
+
+    # Failures must surface in Discord, and radar relays bot comments on the
+    # issue. Dropping the label makes re-labelling the retry.
+    - name: Report failure on the issue
+      if: failure()
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        REPO: ${{ github.repository }}
+        N: ${{ inputs.issue_number }}
+        LABEL: ${{ inputs.label }}
+        RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: |
+        body="Agent run failed before producing a PR. Logs: $RUN"
+        body="$body"$'\n\n'"Re-add the \`$LABEL\` label to retry."
+        gh issue comment "$N" --repo "$REPO" --body "$body"
+        gh issue edit "$N" --repo "$REPO" --remove-label "$LABEL" || true

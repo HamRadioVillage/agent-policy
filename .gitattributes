@@ -1,0 +1,3 @@
+# The action runs bash on Linux runners. A CRLF that sneaks in from a
+# Windows clone breaks every `run:` block in it, so normalize on the way in.
+* text=auto eol=lf
