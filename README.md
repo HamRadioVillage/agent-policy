@@ -108,6 +108,20 @@ When an exchange is denied the API returns an opaque `401`; the reason is on
 the authentication-history tab of the Console's workload-identity page.
 `match_subject_prefix` means the rule is narrower than the run that fired.
 
+A denial that never reaches that tab was never a denial: the exchange did not
+happen. The action's first step therefore fails the run when any `anthropic_*`
+input is empty, naming both the input and the variable to set. That check
+earns its place because **GitHub does not enforce `required` on composite
+action inputs** — it is documentation, not validation — and because a repo
+reads an org variable as empty, rather than failing, in two different cases:
+the variable does not exist, or its visibility does not include that repo.
+The second is invisible from the repo side. Nothing is misspelled, nothing
+errors, and the run fails with the same opaque `401` as a real claim
+mismatch, which sends you reading auth history for an entry that was never
+written. The step also warns, without failing, when an identifier does not
+carry its expected prefix — that catches two variables pasted into each
+other's slots, while leaving Anthropic free to change the formats.
+
 `allowed_tools` is the per-repo safety boundary. Bash is off by default in
 `claude-code-action`, so any command not listed there cannot be executed —
 list the repo's real test and lint commands and nothing more.

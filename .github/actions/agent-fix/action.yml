@@ -64,19 +64,71 @@ inputs:
 runs:
   using: composite
   steps:
-    # A denied token exchange returns an opaque 401 "Authentication failed",
-    # so catch the one setup mistake we can see from here: a caller that
-    # forgot `id-token: write`. Without it the runner sets neither variable
-    # and there is no OIDC token to exchange.
-    - name: Check the caller can mint an OIDC token
+    # Three setup mistakes all surface as the same opaque 401
+    # "Authentication failed" from the token exchange, and none of them
+    # reaches the Console's authentication-history tab, because the exchange
+    # never gets far enough to be matched against a rule. There is nothing
+    # to read afterwards, so catch them here while the cause still has a name.
+    #
+    # The empty-identifier case is the likely one. GitHub does not enforce
+    # `required` on composite action inputs - it is documentation, not
+    # validation - so a `vars.X` the calling repo cannot read arrives as an
+    # empty string and flows through unchallenged. A repo reads an org
+    # variable as empty, rather than failing, when the variable does not
+    # exist OR when its visibility does not include that repo. The second is
+    # invisible from the repo side: nothing is misspelled and nothing errors.
+    - name: Preflight the OIDC token and the federation identifiers
       shell: bash
+      env:
+        RULE_ID: ${{ inputs.anthropic_federation_rule_id }}
+        ORG_ID: ${{ inputs.anthropic_organization_id }}
+        SVC_ID: ${{ inputs.anthropic_service_account_id }}
+        WORKSPACE_ID: ${{ inputs.anthropic_workspace_id }}
       run: |
+        fail=0
+
         if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
           echo "::error::This job cannot request an OIDC token. Add" \
                "'id-token: write' to the caller's permissions block."
-          exit 1
+          fail=1
         fi
-        echo "OIDC token endpoint is available."
+
+        # Report every missing identifier in one run. Exiting on the first
+        # one costs a round trip per variable, and these are usually all
+        # missing together because nobody set them up yet.
+        #
+        # Name the variable as well as the input: the two are not spelled
+        # the same, and that mapping is the part callers get wrong.
+        check_set() {
+          if [ -z "$2" ]; then
+            echo "::error::Input '$1' is empty - set repo or org variable" \
+                 "$3. An org variable whose visibility excludes this repo" \
+                 "reads as empty here rather than failing."
+            fail=1
+          fi
+        }
+        check_set anthropic_federation_rule_id  "$RULE_ID" ANTHROPIC_FEDERATION_RULE_ID
+        check_set anthropic_organization_id     "$ORG_ID"  ANTHROPIC_ORGANIZATION_ID
+        check_set anthropic_service_account_id  "$SVC_ID"  ANTHROPIC_SERVICE_ACCOUNT_ID
+
+        # Prefixes warn, never fail. They catch the other way this goes
+        # wrong - two variables pasted into each other's slots - but
+        # Anthropic owns these formats, so a future change to them must not
+        # break a working setup. The organization id is a bare UUID and has
+        # no prefix to check.
+        check_prefix() {
+          case "$2" in
+            ""|"$3"*) ;;
+            *) echo "::warning::Input '$1' does not start with '$3'." \
+                    "Check that the variables are not swapped." ;;
+          esac
+        }
+        check_prefix anthropic_federation_rule_id "$RULE_ID"      fdrl_
+        check_prefix anthropic_service_account_id "$SVC_ID"       svac_
+        check_prefix anthropic_workspace_id       "$WORKSPACE_ID" wrkspc_
+
+        [ "$fail" -eq 0 ] || exit 1
+        echo "OIDC endpoint present, all federation identifiers set."
 
     # On a public repo anyone can open an issue, and triage-level
     # collaborators can label one. Only write access spends tokens.
