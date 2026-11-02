@@ -5,10 +5,15 @@ participating repo runs the action in this repo, which triages the report,
 fixes it if it can find a root cause, documents the change, and opens a pull
 request for a human to review.
 
-Two files matter:
+Three files matter:
 
 - `.github/actions/agent-fix/action.yml` — the composite action callers use
 - `agent/triage-and-fix.md` — the playbook the agent follows
+- `callers/TEMPLATE.yml` — the workflow a participating repo copies
+
+`callers/TEMPLATE.yml` is a template, not one of this repo's own workflows,
+which is why it sits in `callers/` and not `.github/workflows/` — GitHub
+would otherwise try to register it as a workflow here.
 
 ## Why this repo is public
 
@@ -31,8 +36,8 @@ runner image, so it needs `ruby/setup-ruby@v1` before the agent starts.
 
 A composite action lets each caller set its toolchain up idiomatically and
 then hand off. The tradeoff is that the caller declares its own
-`permissions`, `concurrency` and `timeout-minutes`; the template in the
-pipeline repo carries them so that stays copy-paste.
+`permissions`, `concurrency` and `timeout-minutes`; `callers/TEMPLATE.yml`
+carries them so that stays copy-paste.
 
 It also removes a hack: the action's files are already on disk at
 `$GITHUB_ACTION_PATH`, so the playbook needs no second checkout and cannot
@@ -40,36 +45,25 @@ end up inside the agent's `git add -A`.
 
 ## Calling it
 
-```yaml
-permissions:
-  contents: write
-  issues: write
-  pull-requests: write
-  id-token: write          # required: the agent's auth is keyless
+Copy [`callers/TEMPLATE.yml`](callers/TEMPLATE.yml) to
+`.github/workflows/agent-fix.yml` in your repo and edit its three marked
+sections: your toolchain, the pinned SHA, and `allowed_tools`. That file is
+the only one a participating repo needs, and it is kept here rather than
+summarised here so there is one copy to keep correct.
 
-# ...
-
-- uses: actions/checkout@v4
-  with: { fetch-depth: 0 }
-
-# ... your toolchain ...
-
-- uses: HamRadioVillage/agent-policy/.github/actions/agent-fix@<sha>
-  with:
-    issue_number: ${{ github.event.issue.number }}
-    anthropic_federation_rule_id: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
-    anthropic_organization_id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
-    anthropic_service_account_id: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
-    allowed_tools: >-
-      Read,Write,Edit,Glob,Grep,
-      Bash(git:*),Bash(gh issue:*),Bash(gh pr:*)
-```
-
-**Pin to a commit SHA, never `@main`.** This action runs with write access to
-the calling repo and can mint Anthropic tokens on the org's behalf, which
-makes this repo the highest-value target in the org. Treat the ref like a
-dependency version: `main` is protected, CODEOWNERS requires review, and
+**Pin to a commit SHA, never `@main` or a tag.** This action runs with write
+access to the calling repo and can mint Anthropic tokens on the org's behalf,
+which makes this repo the highest-value target in the org. A mutable ref
+means whoever can move it decides what runs in your repo. Treat the ref like
+a dependency version: `main` is protected, CODEOWNERS requires review, and
 callers pin.
+
+The template ships an unresolvable `@REPLACE_WITH_SHA` rather than a real
+commit, on purpose. A template that lives inside the repo it pins can never
+hold a current SHA — the commit that updates the pin becomes the new HEAD —
+so any real value here would be stale the next time the action changes, and
+a stale pin resolves and runs perfectly happily. Failing on an unresolvable
+ref costs one deliberate step and cannot pass silently.
 
 ## Authentication
 

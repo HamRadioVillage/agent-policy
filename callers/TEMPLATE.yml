@@ -1,0 +1,91 @@
+# Copy to <your-repo>/.github/workflows/agent-fix.yml, then edit the three
+# marked sections. This is the only file a participating repo needs.
+#
+# This file deliberately does not live in .github/workflows/ here - it is a
+# template, not one of this repo's own workflows, and GitHub would try to
+# register it as one.
+#
+# For HamRadioVillage repos. The action it calls authenticates against this
+# org's federation rules, which match on `repository_owner`, so a copy of
+# this outside the org cannot mint a token with it. You are welcome to read
+# it; it is not a supported dependency and the action may change shape
+# without notice.
+name: Agent fix
+
+on:
+  issues:
+    types: [labeled]
+
+# id-token is what makes this keyless: it lets the job mint a GitHub OIDC
+# token, which the action trades for a short-lived Anthropic token. Without
+# it the run fails on the action's first step, by design and with a readable
+# error rather than a 401.
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write
+
+concurrency:
+  group: agent-issue-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    if: github.event.label.name == 'agent:triage'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # --- 1. your toolchain, however this repo normally sets it up --------
+      # - uses: actions/setup-node@v4
+      #   with: { node-version-file: .nvmrc, cache: npm }
+      # - run: npm ci
+      # --------------------------------------------------------------------
+
+      # --- 2. pin the action ----------------------------------------------
+      # Replace REPLACE_WITH_SHA with a full commit SHA from this repo:
+      #
+      #   gh api repos/HamRadioVillage/agent-policy/commits/main --jq .sha
+      #
+      # The placeholder is deliberate. A template that lives in the repo it
+      # pins can never carry a current SHA - the commit that updates the pin
+      # becomes the new HEAD - so any real SHA written here is stale the next
+      # time the action changes, and stale pins resolve and run happily. An
+      # unresolvable ref fails immediately instead.
+      #
+      # Pin to a SHA, never @main or a tag. This action runs with write
+      # access to your repo and can mint Anthropic tokens on the org's
+      # behalf; a mutable ref means someone else decides what that code is.
+      - uses: HamRadioVillage/agent-policy/.github/actions/agent-fix@REPLACE_WITH_SHA
+        with:
+          issue_number: ${{ github.event.issue.number }}
+          # Identifiers, not secrets - safe in a public repo, and there is no
+          # ANTHROPIC_API_KEY anywhere by design. The org-level vars are the
+          # same everywhere; the rule id is this repo's own opt-in switch, so
+          # set it as a repo variable. A wrong rule id fails the claim match
+          # server-side - it cannot borrow another repo's access.
+          #
+          # Set all three before you merge. An org variable whose visibility
+          # excludes this repo reads as an empty string rather than failing,
+          # so the action's preflight step fails the run and names the
+          # variable instead of letting it reach the token exchange.
+          anthropic_federation_rule_id: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
+          anthropic_organization_id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+          anthropic_service_account_id: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          base_branch: main
+          # Only if this repo is a fork whose work belongs upstream. Empty or
+          # absent = PRs stay here, which is almost always what you want.
+          # Read section 5 of agent/triage-and-fix.md before setting it.
+          # pr_target_repo: upstream-owner/name
+          # --- 3. the commands the agent may run in this repo -------------
+          # Bash is off by default in claude-code-action, so anything absent
+          # here cannot be executed. List this repo's real test and lint
+          # commands and nothing more.
+          allowed_tools: >-
+            Read,Write,Edit,Glob,Grep,
+            Bash(git:*),Bash(gh issue:*),Bash(gh pr:*)
+          # ----------------------------------------------------------------
