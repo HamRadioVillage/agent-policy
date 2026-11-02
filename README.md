@@ -86,10 +86,24 @@ and its default branch:**
   "match": {
     "subject_prefix": "repo:HamRadioVillage/villagers:ref:refs/heads/main",
     "audience": "https://api.anthropic.com",
-    "claims": { "repository_owner": "HamRadioVillage" }
+    "claims": {
+      "repository_owner": "HamRadioVillage",
+      "event_name": "issues"
+    }
   }
 }
 ```
+
+**`event_name` must be `issues`, and the Console's wizard defaults it to
+`push`.** Leaving the default in place produces a rule that can never match
+anything this pipeline does: the only trigger is `issues: labeled`, so every
+token request arrives carrying `event_name: issues` and is denied with
+`match_claim_value_mismatch`. Everything else about the run looks correct
+while it happens, which makes it an expensive five minutes. Keep the
+constraint rather than deleting it — scoping tokens to issues-triggered runs
+is worth having — and note that adding another trigger later, such as
+`workflow_dispatch` for manual retries, needs this claim updated to match or
+the new trigger will be denied the same way.
 
 The rule *is* the opt-in list, and deleting it is the kill switch for that
 repo. Do not widen `subject_prefix` to `repo:HamRadioVillage/*`: that matches
@@ -99,8 +113,20 @@ would get a token. The `issues: labeled` trigger always runs on the default
 branch, so the exact prefix above is sufficient and is the narrowest form.
 
 When an exchange is denied the API returns an opaque `401`; the reason is on
-the authentication-history tab of the Console's workload-identity page.
-`match_subject_prefix` means the rule is narrower than the run that fired.
+the authentication-history tab of the Console's workload-identity page, in an
+entry that also prints every claim the token carried. Read the reason before
+changing anything, because the two common ones point in opposite directions:
+
+- `match_subject_prefix` — the `subject_prefix` is narrower than the run that
+  fired. Compare it against the entry's `sub`.
+- `match_claim_value_mismatch` — the prefix and audience were fine and one
+  entry in `claims` disagrees. The entry does not say which, so diff the
+  rule's claim conditions against the claims it logged. `event_name` is the
+  usual culprit, for the reason above.
+
+The fastest way through an ambiguous mismatch is to cut `claims` back to
+`repository_owner` alone, confirm a run goes green, then add each constraint
+back one at a time: whichever one breaks it names itself.
 
 A denial that never reaches that tab was never a denial: the exchange did not
 happen. The action's first step therefore fails the run when any `anthropic_*`
